@@ -70,6 +70,12 @@ class GitBLOB(GitObject):
         self.genId()
         db.save(self)
 
+    def unpack(self, db, obj_id):
+        '''GitObjectツリーに対する再帰ロード'''
+        db.load(obj_id, self)
+        self.genId()
+
+
 class FileAttr(object):
     TYPE_DIR      = 40   # ファイル種別: ディレクトリ
     TYPE_FILE     = 100  # ファイル種別: ファイル
@@ -132,6 +138,36 @@ class GitTree(GitObject):
         db.save(self)
 
 
+    def unpack(self, db, obj_id):
+        '''GitObjectツリーに対する再帰ロード'''
+        db.load(obj_id, self)
+        deco_dat = zlib.decompress(self.content)
+
+        # ヘッダを解析
+        hdr_end_idx = deco_dat.find('\0')
+        otype = deco_dat[0:4]
+        size  = deco_dat[4:hdr_end_idx]
+
+        # データを取り出し
+        self.childlen = {}
+        for item in deco_dat[hdr_end_idx+1:].split('\n'):
+            if item == '': continue
+
+            (attr_and_name, git_obj_id) = item.split('\0')
+            idx = attr_and_name.find(' ')
+            f_attr_str, f_name = (attr_and_name[0:idx], attr_and_name[idx+1:])
+
+            f_attr = FileAttr()
+            f_attr.parseString(f_attr_str)
+        
+            git_obj = GitTree() if f_attr.isDirectory() else GitBLOB()
+            git_obj.unpack(db, git_obj_id.strip())
+
+            self.appendChild(git_obj, f_name.strip(), f_attr)
+
+        self.genId()
+
+
 class GitDB(object):
     def save(self, git_obj):
         path = os.path.join('.mgit/objects', git_obj.getId())
@@ -149,9 +185,9 @@ class GitDB(object):
         f = open(path, "rb")
         git_obj.setContent(f.read())
 
-        print 'id:', git_obj_id                       # for debug
-        print '--------------------'                  # for debug
-        print binascii.b2a_hex(git_obj.getContent())  # for debug
+#        print 'id:', git_obj_id                       # for debug
+#        print '--------------------'                  # for debug
+#        print binascii.b2a_hex(git_obj.getContent())  # for debug
 
         f.close()
 
