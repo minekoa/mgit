@@ -13,9 +13,9 @@ def ls_tree(tree, indent):
             ls_tree(git_obj, indent + 2)
 
 if __name__ == '__main__':
-    target_id = sys.argv[1]
-
     db     = GitDB()
+    ref_path, target_id = db.dereference('HEAD')
+
     tree = GitTree()
     tree.unpack(db, target_id)
 

@@ -5,6 +5,7 @@ import hashlib
 import struct
 import os.path
 import binascii
+import re
 
 class GitObject(object):
     '''
@@ -169,6 +170,10 @@ class GitTree(GitObject):
 
 
 class GitDB(object):
+
+    #========================================
+    # オブジェクトDB の操作
+
     def save(self, git_obj):
         path = os.path.join('.mgit/objects', git_obj.getId())
         f = open(path, "wb")
@@ -191,4 +196,53 @@ class GitDB(object):
 
         f.close()
 
+
+    #========================================
+    # リファレンス の操作
+
+    def dereference(self, ref_name):
+        path = os.path.join('.mgit', ref_name)
+
+        if not os.path.exists(path):
+            return (ref_name, None)
+
+        f   = open(path, 'r')
+        dat = f.read()
+        matobj = re.match(r"ref: (.*)", dat)
+        f.close()
+
+        if matobj != None:
+            return self.dereference(matobj.group(1))
+        else:
+            return (ref_name, dat.strip())
+
+    def updateReference(self, ref_name, git_obj_id):
+        ref_path, old_obj_id = self.dereference(ref_name)
+
+        # 変更がない場合はなにもしない
+        if old_obj_id != None and old_obj_id == git_obj_id:
+            return
+
+        # リファレンスの参照先を更新
+        path = os.path.join('.mgit', ref_path)
+        f = open(path, 'w')
+        f.write(git_obj_id)
+        f.close()
+
+        
+        # ログを残す
+        self._writeRefUpdateLog(ref_path, old_obj_id, git_obj_id )
+
+
+    def _writeRefUpdateLog(self, ref_path, old_obj_id, git_obj_id):
+
+        logpath = os.path.join('.mgit/logs', ref_path)
+        if not os.path.exists(os.path.dirname(logpath)):
+            os.makedirs(os.path.dirname(logpath))
+
+        old_obj_id_str = old_obj_id if olf_obj_id != None else '0'*40
+
+        logfile = open(logpath, 'a')
+        logfile.write( '%s %s %s\n' % (old_obj_id_str, git_obj_id,
+                                       datetime.datetime.today().strftime("%Y%m%dT%H%M%S")))
 

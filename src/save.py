@@ -41,12 +41,18 @@ if __name__ == '__main__':
             print '  -%s/' % d_name    # for debug
 
 
-    # .mgit/objects ‚ÉObjDB‚ğ•Û‘¶ -------------------------------
+    # 2. .mgit/objects ‚ÉObjDB‚ğ•Û‘¶ ----------------------------
     db = GitDB()
 
     root_tree = tmp_dict[target]
     root_tree.pack(db)
 
     print "ROOT_KEY:", root_tree.getId()
+
+
+    # 3. HEAD‚Ìî•ñ‚ğc‚· ---------------------------------------
+    db.updateReference('HEAD', root_tree.getId())
+
+
 
 
