@@ -9,14 +9,9 @@ if __name__ == '__main__':
     blob = GitBLOB()
     db.load(obj_id, blob)
 
+    fdat = blob.takeOut()
 
-    blob.genId()
-    fdat = blob.parseContent()
-
-    print 'id:'
-    print '  old  :', obj_id
-    print '  renew:', blob.getId()
+    print 'id  :', blob.getId()
     print '-----------------------'
     print fdat
-
-
+    print '-----------------------'

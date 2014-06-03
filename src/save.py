@@ -23,7 +23,7 @@ if __name__ == '__main__':
         for f_name in f_names:
             f = open(os.path.join(d_path,f_name), 'r')
             blob = GitBLOB()
-            blob.genContent(f)
+            blob.putAway(f)
             f.close()
             curtree.appendChild(blob, f_name, 
                                 FileAttr( FileAttr.TYPE_FILE, FileAttr.EXECUTABLE_NG))
