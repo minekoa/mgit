@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 from mgitlib import *
 import sys
 import binascii

@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 #-*- coding: shift_jis -*-
 from mgitlib import *
 import sys
