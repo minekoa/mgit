@@ -39,12 +39,14 @@ class GitBLOB(GitObject):
         self.id       = id
         self.contents = None
 
+    def getType(self): return 'blob'
+
     def putAway(self, targetfile):
         '''対象ファイルをBLOBにしまい込む'''
 
         dat = targetfile.read()
         hdr = 'blob %d\0' % len(dat)
-        raw_contents = struct.pack('< %ds %ds' % (len(hdr), len(dat)), 
+        raw_contents = struct.pack('> %ds %ds' % (len(hdr), len(dat)), 
                                   hdr, dat)
         self.id       = self.genId(raw_contents)
         self.contents = zlib.compress(raw_contents)
@@ -58,8 +60,8 @@ class GitBLOB(GitObject):
         otype = deco_dat[0:4]
         size  = deco_dat[4:hdr_end_idx]
 
-        print 'type:', ''.join(otype)   # for debug
-        print 'size:', size             # for debug
+#        print 'type:', ''.join(otype)   # for debug
+#        print 'size:', size             # for debug
 
         # データを取り出し
         return deco_dat[hdr_end_idx+1:]
@@ -91,6 +93,8 @@ class GitTree(GitObject):
         self.contents = None
         self.childlen = {}
 
+    def getType(self): return 'tree'
+
     def appendChild( self, gitobj, f_name, f_attr ):
         self.childlen[f_name] = (gitobj, f_attr)
                                      
@@ -105,12 +109,12 @@ class GitTree(GitObject):
 
             # オブジェクトリスト行 追加 
             finfo = '%s %s' % (f_attr.asString(), f_name)
-            body += struct.pack('%ds c 20s' % len(finfo),
+            body += struct.pack('>%ds c 20s' % len(finfo),
                                 finfo, '\0', 
                                 binascii.a2b_hex(gitobj.getId()))
         hdr = 'tree %d\0' % len(body)
 
-        raw_contents = struct.pack('< %ds %ds\n' % (len(hdr), len(body)), 
+        raw_contents = struct.pack('> %ds %ds\n' % (len(hdr), len(body)), 
                                   hdr, body)
 
         self.contents = zlib.compress(raw_contents)
@@ -188,6 +192,115 @@ class FileAttr(object):
         return self.ftype == FileAttr.TYPE_DIR
 
 
+class GitIndex(object):
+    def __init__(self):
+        self.rows = []
+
+    def append(self, pathname, obj_id):
+        self.rows.append( GitIndexRow(pathname, obj_id))
+
+    def pack(self, wf):
+        wf.write(struct.pack( ">4s L L",
+                              'DISC', 2, len(self.rows)))
+        for row in self.rows:
+            row.pack(wf)
+
+    def unpack(self, rf):
+        sig, ver, f_cnt = struct.unpack(">4s L L",
+                                        rf.read(4*3))
+        print 'sig :', sig           # for debug
+        print 'ver : %04d' % ver     # for debug
+        print 'cnt : %04x' % f_cnt   # for debug
+
+        if ver != 2:
+            raise ValueError('Not Supoort Format %d' % ver)
+
+        for i in range(0, f_cnt):
+            tmp = GitIndexRow()
+            tmp.unpack(rf)
+            self.rows.append(tmp)
+
+
+        if f_cnt != len(self.rows):
+            print "ERROR ! unpack failed %d != %d" % (f_cnt, len(self.rows))
+
+
+class GitIndexRow(object):
+    def __init__(self, pathname='', obj_id=''):
+        self.pathname = pathname.replace(os.path.sep, '/')
+        if self.pathname[0:2] == './':
+            self.pathname = self.pathname[2:]
+
+        self.obj_id   = obj_id
+
+        if self.pathname != '':
+            self.loadFileStatus(self.pathname)
+
+    def loadFileStatus(self, pathname):
+        statinfo = os.stat(pathname)
+        self.st_ctime   = statinfo.st_ctime
+        self.st_ctime_n = 0
+        self.st_mtime   = statinfo.st_mtime
+        self.st_mtime_n = 0
+        self.st_dev     = statinfo.st_dev
+        self.st_ino     = statinfo.st_ino
+        self.st_mode    = statinfo.st_mode
+        self.st_uid     = statinfo.st_uid
+        self.st_gid     = statinfo.st_gid
+        self.st_size    = statinfo.st_size
+
+
+    def pack(self, wf):
+        # ctime(sec) ctime(nanosec) mtime(sec) mtime(nanosec)
+        wf.write(struct.pack(">L L L L",
+                             self.st_ctime, 0, 
+                             self.st_mtime, 0))
+                
+        # dev inode mode uid gid size
+        wf.write(struct.pack(">L L L L L L",
+                             self.st_dev,
+                             self.st_ino,
+                             self.st_mode,
+                             self.st_uid,
+                             self.st_gid,
+                             self.st_size))
+
+        # SHA1_hash
+        wf.write(struct.pack(">20s",
+                             binascii.a2b_hex(self.obj_id)))
+
+        # name & langth
+        pathname_len = len(self.pathname)
+        wf.write(struct.pack(">H", pathname_len))
+        wf.write(struct.pack(">%ds" % pathname_len, self.pathname))
+
+        # padding
+        padding_len  = (8 - (pathname_len -2) % 8) if (pathname_len -2) % 8 != 0 else 8
+        wf.write(struct.pack(">%ds" % padding_len, '\0' * padding_len))
+
+    def unpack(self, rf):
+        self.st_ctime, self.st_ctime_n         = struct.unpack(">L L", rf.read(4 *2))
+        self.st_mtime, self.st_mtime_n         = struct.unpack(">L L", rf.read(4 *2))
+        self.st_dev, self.st_ino, self.st_mode = struct.unpack(">L L L", rf.read(4 *3))
+        self.st_uid, self.st_gid, self.st_size = struct.unpack(">L L L", rf.read(4 *3))
+
+        (objid,) =  struct.unpack(">20s", rf.read(20))
+        self.obj_id = binascii.b2a_hex(objid)
+
+        (f_name_len,)   = struct.unpack(">H", rf.read(2))
+        (name_and_pad,) = struct.unpack(">%ds" % f_name_len, rf.read(f_name_len))
+        self.pathname   = name_and_pad.strip()
+
+        # padding のスキップ
+        pad_len = (8 - (f_name_len -2) % 8) if (f_name_len -2) % 8 != 0 else 8
+        rf.read(pad_len)
+
+
+    def __str__(self):
+        return '%6o %s %s' % (self.st_mode, self.obj_id, self.pathname)
+
+
+
 class GitDB(object):
 
     #========================================
@@ -204,13 +317,24 @@ class GitDB(object):
             git_obj.setId(git_obj_id)
             git_obj.setContents(f.read())
 
-        f.close()
+    def readObjHeader(self, git_obj_id):
+        path = os.path.join('.mgit/objects', git_obj_id)
+
+        with open(path, "r") as f:
+            tmp = zlib.decompress(f.read())
+            (obj_type, size) = tmp[:tmp.find('\0')].split(' ')
+            return (obj_type, int(size))
 
 
     #========================================
     # リファレンス の操作
 
     def dereference(self, ref_name):
+        '''
+        reference の指し示す obj_id を取得する。
+        reference のreference 対応のため、末端referenceもペアで返す
+        @return (terminal_ref_name, obj_id)
+        '''
         path = os.path.join('.mgit', ref_name)
 
         if not os.path.exists(path):
@@ -255,4 +379,12 @@ class GitDB(object):
         logfile = open(logpath, 'a')
         logfile.write( '%s %s %s\n' % (old_obj_id_str, git_obj_id,
                                        datetime.datetime.today().strftime("%Y%m%dT%H%M%S")))
+
+
+    #========================================
+    # インデックス の操作
+
+        # これから作ります
+
+
 
