@@ -9,11 +9,10 @@ import struct
 
 
 if __name__ == '__main__':
-    target = sys.argv[1]
 
-    rf = open(target, 'rb')
-
-    index = GitIndex()
-    index.unpack(rf)
+    db     = GitDB()
+    index  = GitIndex()
+    with db.openIndexFile('rb') as rf:
+        index.unpack(rf)
 
     print index

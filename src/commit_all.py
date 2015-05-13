@@ -4,11 +4,10 @@ from mgitlib import *
 import sys
 import os
 import os.path
+import time
 
-if __name__ == '__main__':
-    target = '.'
+def createGitTree(target):
     tmp_dict = {}
-
 
     # 1. オブジェクトツリーの作成 -------------------------------
     for d_path, d_names, f_names in os.walk(target):
@@ -41,19 +40,46 @@ if __name__ == '__main__':
                                 FileAttr( FileAttr.TYPE_DIR ) )
             print '  -%s/' % d_name    # for debug
 
+        return tmp_dict[target]
 
-    # 2. .mgit/objects にObjDBを保存 ----------------------------
-    db = GitDB()
 
-    root_tree = tmp_dict[target]
-    root_tree.pack(db)
+if __name__ == '__main__':
+    gitdb     = GitDB()
+    gitconfig = GitConfig()
 
-    print "ROOT_KEY:", root_tree.getId()
+    # コミット時 対象 を取得
+    root_tree = createGitTree('.')
 
+    # 前のコミットオブジェクトを取得
+    (ref_name, prv_obj_id) = gitdb.dereference('HEAD')
+
+    if prv_obj_id != None:
+        prev_commit = GitCommit()
+        prev_commit.unpack(gitdb, prv_obj_id)
+    else:
+        prev_commit = None
+
+
+    # コミット時の情報を生成・取得
+#    msg = raw_input( 'commit message> ')
+    msg = 'テストテスト'
+    commit_info = CommitInfo()
+    commit_info.setAuthorInfo( gitconfig.getUserInfo(), EpochTimeTz.now() )
+    commit_info.setCommitInfo( gitconfig.getUserInfo(), EpochTimeTz.now() ,msg )
+
+
+    # コミットオブジェクトの生成
+    commit = GitCommit()
+    commit.setCommitInfo(commit_info)
+    commit.setRootTree(root_tree)
+    if prev_commit != None:
+        commit.setParentCommit(prev_commit)
+
+
+    commit.pack(gitdb)
+    print 'COMMIT: ', commit.getId()
 
     # 3. HEADの情報を残す ---------------------------------------
-    db.updateReference('HEAD', root_tree.getId())
-
-
+    gitdb.updateReference('HEAD', commit.getId())
 
 

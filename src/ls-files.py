@@ -9,12 +9,12 @@ import struct
 
 
 if __name__ == '__main__':
-    rf = open('.mgit/index', 'rb')
-
+    db = GitDB()
     index = GitIndex()
-    index.unpack(rf)
+    with db.openIndexFile('rb') as rf:
+        index.unpack(rf)
 
-    for item in index.rows:
+    for key, item in index.rows.items():
         print item
 
 

@@ -8,6 +8,14 @@ import os.path
 import binascii
 import re
 import datetime
+import time
+import ConfigParser
+
+#============================================================
+#
+# GitObject 
+#
+#============================================================
 
 class GitObject(object):
     '''
@@ -164,12 +172,113 @@ class GitTree(GitObject):
         return (ftype, fname, objid, objid_end)
 
 
+class GitCommit(GitObject):
+    '''
+    <生COMMIT>    := <ヘッダ>\0<ボディ>
+    <ヘッダ>      := commit <サイズ>
+    <ボディ>      := <ルートTREE>\n<親コミット>\n<AUTHOR>\n<committr>\n\n<メッセージ>
+                   | <ルートTREE>\n<AUTHOR>\n<COMMITTER>\n\n<メッセージ>
+    <ルートTREE>  := tree <ハッシュ文字列>
+    <親コミット>  := parent <ハッシュ文字列>
+    <AUTHOR>      := author <名前> \<<メアド>\> <時間>
+    <COMMITTER>   := committer <名前> \<<メアド>\> <時間>
+    <メッセージ>  := (任意の文字列、複数行可）
+
+    <時間>           := (エポック秒 + タイムゾーン。例: 1401425880 +0900)
+    <ファイル種別>   := (8進数文字列, 最大6桁)
+    <ハッシュ文字列> := (16進数文字列, 40文字)
+    '''
+
+    def __init__(self, id=None):
+        self.id            =id
+        self.contents      = None
+        self.root_tree     = None
+        self.parent_commit = None
+        self.commit_info   = None
+
+    def setCommitInfo(self, info):     self.commit_info = info
+    def setRootTree(self, tree):       self.root_tree   = tree
+    def setParentCommit(self, parent): self.parent_commit = parent
+
+    def genRawContents(self):
+        tree_str   = 'tree %s\n' % self.root_tree.getId()
+        if self.parent_commit != None:
+            parent_str = 'parent %s\n' % self.parent_commit.getId() 
+        else: 
+            parent_str =''
+
+        body = '%s%s%s' % (tree_str, parent_str,
+                           self.commit_info.asString())
+        hdr = 'commit %d' % len(body)
+        return ''.join((hdr,'\0',body))
+
+    def pack(self, db):
+        self.root_tree.pack(db)
+        raw_contents = self.genRawContents()
+
+        self.contents = zlib.compress(raw_contents)
+        self.id       = self.genId(raw_contents)
+
+        db.save(self)
+
+
+    def unpack(self, db, obj_id):
+        db.load(obj_id, self)
+        deco_dat = zlib.decompress(self.contents)
+
+        # ヘッダを解析
+        hdr_end_idx = deco_dat.find('\0')
+        otype = deco_dat[0:4]
+        size  = deco_dat[4:hdr_end_idx]
+        
+        # 本体
+        lines = deco_dat[hdr_end_idx+1:].split('\n')
+        idx = 0
+
+        tokens = lines[idx].split(' ')
+        if tokens[0] == 'tree'  : 
+            tree_id = tokens[1]
+            self.root_tree = GitTree()
+            self.root_tree.unpack(db, tree_id)
+        else:
+            raise ValueError('GIT_COMMIT FORMAT ERROR (tree line)')
+        idx += 1
+       
+        tokens = lines[idx].split(' ')
+        if tokens[0] == 'parent':
+            parent_id = tokens[1]
+            self.parent_commit = GitCommit()
+            self.parent_commit.unpack(db, parent_id)
+            idx += 1
+
+        self.commit_info = CommitInfo()
+        self.commit_info.parseString(lines[idx:])
+
+
+        self.id = obj_id
+
+        #CRC-CHK                                    # for debug
+        raw_contents = self.genRawContents()        # for debug
+        new_id       = self.genId(raw_contents)     # for debug
+        print 'old_id:', obj_id                     # for debug
+        print 'new_id:', new_id                     # for debug
+        print 'raw:-------------------'             # for debug
+        print raw_contents                          # for debug
+        print '--------------------end'             # for debug
+
+
+#============================================================
+#
+# Entities for Git
+#
+#============================================================
+
 class FileAttr(object):
     TYPE_DIR      = 0o40   # ファイル種別: ディレクトリ
     TYPE_FILE     = 0o100  # ファイル種別: ファイル
     TYPE_SLNK     = 0o120  # ファイル種別: シンボリックリンク
-    EXECUTABLE_OK = 0o644  # パーミッション:   実行可能 (※ TYPE=FILEのみ指定可)
-    EXECUTABLE_NG = 0o755  # パーミッション:   実行不可 (※ TYPE=FILEのみ指定可)
+    EXECUTABLE_OK = 0o755  # パーミッション:   実行可能 (※ TYPE=FILEのみ指定可)
+    EXECUTABLE_NG = 0o644  # パーミッション:   実行不可 (※ TYPE=FILEのみ指定可)
 
     def __init__(self, ftype=0, fexec=0):
         self.ftype = ftype
@@ -191,18 +300,152 @@ class FileAttr(object):
     def isDirectory(self):
         return self.ftype == FileAttr.TYPE_DIR
 
+    def isFile(self):
+        return self.ftype == FileAttr.TYPE_FILE
+
+    @classmethod
+    def directory(cls): return cls(FileAttr.TYPE_DIR)
+
+    @classmethod
+    def symboliclink(cls): return cls(FileAttr.TYPE_SLNK)
+        
+
+
+class EpochTimeTz(object):
+    '''大変乱暴な UTCエポック秒 + タイムゾーン の時間型'''
+
+    @classmethod
+    def now(cls):
+        '''python の datetime.now() と datetime.utcnow() の差分を利用して
+        無理やりタイムゾーンもどきを作ってる。他に良い方法ないかな？
+        '''
+        utcdate   = datetime.datetime.utcnow()
+        locdate   = datetime.datetime.now()        
+        delta_sec = (locdate - utcdate).seconds
+
+        epoch_sec  = int(time.mktime(utcdate.timetuple()))
+        tz_offst_h = delta_sec / 3600 if delta_sec % 3600 == 0 else  delta_sec / 3600 + 1
+
+        return cls(epoch_sec, tz_offst_h)
+
+    @classmethod
+    def fromString(cls, soruce):
+        matobj = re.match( r"([0-9]+) \+([0-9]+)", soruce )
+        epoch_sec  = int(matobj.group(1))
+        tz_offst_h = int(matobj.group(2)) / 100
+
+        return cls(epoch_sec, tz_offst_h)
+
+    def __init__(self, epoch_sec=None, tz_offset_h=None):
+        self.epoch_sec  = epoch_sec
+        self.tz_offst_h = tz_offset_h
+
+    def asString(self):
+        return '%s +%04d' % (self.epoch_sec, self.tz_offst_h * 100)
+    
+
+    def asDateTimeUTC(self):
+        return datetime.datetime(*time.localtime(self.epoch_sec)[:6])
+
+    def asDateTimeLocal(self):
+        return datetime.datetime(
+            *time.localtime(self.epoch_sec + self.tz_offset_h * 3600)[:6])
+
+
+class UserInfo(object):
+    '''ユーザー情報。名前付きタプルでも問題ないが、一応クラスで'''
+    def __init__(self, name, email):
+        self.name  = name
+        self.email = email
+
+
+class CommitInfo(object):
+    '''コミット時の情報
+    時間、コミットした人、コミットメッセージ など
+    '''
+    def __init__(self):
+        self.author         = None
+        self.authoring_time = None
+
+        self.committer      = None
+        self.commit_time    = None
+        self.commit_message = None
+
+    def setAuthorInfo(self, userinfo, time):
+        '''変更した人の情報'''
+        self.author = userinfo
+        self.authoring_time = time
+
+    def setCommitInfo(self, userinfo, time, msg):
+        '''コミットした人の情報
+        通常は「変更した人」と同じだけれども、
+        「パッチ投稿→コミッタが採用」なフローだと別になる
+        '''
+        self.committer      = userinfo
+        self.commit_time    = time
+        self.commit_message = msg
+
+
+    def _makeUserActionStr(self, action_name, user, epoch_time_tz):
+        return '%s %s <%s> %s' % (action_name,
+                                  user.name,
+                                  user.email,
+                                  epoch_time_tz.asString())
+
+    def _parseUserActionStr(self, source):
+        matobj = re.match( r"(author|committer) ([^<]+)<([^>]+)> ([0-9]+ \+[0-9]+)", source)
+        return (matobj.group(1),
+                UserInfo(matobj.group(2).strip(), matobj.group(3)),
+                EpochTimeTz.fromString(matobj.group(4)))
+
+
+    def asString(self):
+        '''Commitオブジェクト生成用文字列変換'''
+        # author
+        athr_str   = self._makeUserActionStr('author',
+                                             self.author,
+                                             self.authoring_time)
+        # committer
+        cmtr_str   = self._makeUserActionStr('committer',
+                                             self.committer,
+                                             self.commit_time)
+
+        return '\n'.join( (athr_str, cmtr_str, '', self.commit_message) )
+
+    def parseString(self, lines):
+        act, user, tm = self._parseUserActionStr(lines[0])
+        if act != 'author': raise ValueError()
+        self.author         = user
+        self.authoring_time = tm
+
+        act, user, tm = self._parseUserActionStr(lines[1])
+        if act != 'committer': raise ValueError()
+        self.committer         = user
+        self.commit_time = tm
+
+        if lines[2].strip() != '': raise ValueError()
+
+        self.commit_message = '\n'.join(lines[3:])
+
+
+#============================================================
+#
+# Git Index
+#
+#============================================================
 
 class GitIndex(object):
     def __init__(self):
-        self.rows = []
+        self.rows = {}
 
     def append(self, pathname, obj_id):
-        self.rows.append( GitIndexRow(pathname, obj_id))
+        pathname = pathname.replace(os.path.sep, '/')
+        self.rows[pathname] = GitIndexRow(pathname, obj_id)
 
     def pack(self, wf):
         wf.write(struct.pack( ">4s L L",
                               'DISC', 2, len(self.rows)))
-        for row in self.rows:
+        for pathname, row in self.rows.items():
             row.pack(wf)
 
     def unpack(self, rf):
@@ -218,11 +461,14 @@ class GitIndex(object):
         for i in range(0, f_cnt):
             tmp = GitIndexRow()
             tmp.unpack(rf)
-            self.rows.append(tmp)
+            self.rows[tmp.pathname] = tmp
 
 
         if f_cnt != len(self.rows):
             print "ERROR ! unpack failed %d != %d" % (f_cnt, len(self.rows))
+
+    def __str__(self):
+        return '\n'.join(item.__str__() for key,item in self.rows.items())
 
 
 class GitIndexRow(object):
@@ -238,10 +484,10 @@ class GitIndexRow(object):
 
     def loadFileStatus(self, pathname):
         statinfo = os.stat(pathname)
-        self.st_ctime   = statinfo.st_ctime
-        self.st_ctime_n = 0
-        self.st_mtime   = statinfo.st_mtime
-        self.st_mtime_n = 0
+        self.st_ctime   = int(statinfo.st_ctime)
+        self.st_ctime_n = int((statinfo.st_ctime - self.st_ctime) * 1000 * 1000 * 1000)
+        self.st_mtime   = int(statinfo.st_mtime)
+        self.st_mtime_n = int((statinfo.st_mtime - self.st_mtime) * 1000 * 1000 * 1000)
         self.st_dev     = statinfo.st_dev
         self.st_ino     = statinfo.st_ino
         self.st_mode    = statinfo.st_mode
@@ -300,6 +546,11 @@ class GitIndexRow(object):
         return '%6o %s %s' % (self.st_mode, self.obj_id, self.pathname)
 
 
+#============================================================
+#
+# Git DB
+#
+#============================================================
 
 class GitDB(object):
 
@@ -384,7 +635,37 @@ class GitDB(object):
     #========================================
     # インデックス の操作
 
-        # これから作ります
+    def openIndexFile(self, mode):
+        '''mode は "rb" or "wb"'''
+        return open( '.mgit/index', mode )
 
 
+#============================================================
+#
+# Git Config
+#
+#============================================================
+
+class GitConfig(object):
+    '''
+    コンフィグファイルの読み出しを行う
+    '''
+    def __init__(self, inifile_path=None):
+        if inifile_path == None:
+            home = os.environ['HOME']
+            inifile_path = os.path.join(home, '.mgitconfig')
+
+        with open(inifile_path, 'r') as f:
+            ini_parser = ConfigParser.SafeConfigParser()
+            ini_parser.readfp(f)
+
+            # User情報の初期化 ← inifile
+            self.user = UserInfo(ini_parser.get('user', 'name'),
+                                 ini_parser.get('user', 'email'))
+
+        print 'load config "%s"'  % inifile_path  # for debug
+        print ' user.name = %s'   % self.user.name  # for debug
+        print ' user.email= <%s>' % self.user.email # for debug
+
+    def getUserInfo(self): return self.user
 

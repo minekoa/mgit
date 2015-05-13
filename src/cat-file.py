@@ -16,10 +16,13 @@ if __name__ == '__main__':
     elif obj_type == 'tree':
         tree = GitTree()
         tree.unpack(db, obj_id)
-        dat = '\n'.join( '%06s %s %s'  % 
-                         (fattr.asString(), fname, gitobj.getId())
+        dat = '\n'.join( '%6s %s %s %s'  % 
+                         (fattr.asString(), 
+                          gitobj.getType(),
+                          gitobj.getId(),
+                          fname) 
                          for fname, (gitobj, fattr) 
-                         in tree.childlen.items())
+                         in tree.childlen.items() )
 
     print 'type:', obj_type 
     print 'size:', size
